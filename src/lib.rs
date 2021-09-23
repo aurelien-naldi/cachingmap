@@ -24,12 +24,12 @@
 //!
 //! // Create a cache and use closures to compute and cache the result
 //! let mut cache = CachingMap::new();
-//! let ref1 = cache.get_or_cache(1, || compute_value(1));
+//! let ref1 = cache.get_or_cache(1, &|| compute_value(1));
 //!
 //! // If we call it on an existing key, the closure is **not** executed
 //! // and we obtain a reference to the previously cached object
-//! let ref1b = cache.get_or_cache(1, || compute_value(1));    // same result, skipped
-//! let ref1c = cache.get_or_cache(1, || compute_value(10));   // different result, also skipped
+//! let ref1b = cache.get_or_cache(1, &|| compute_value(1));    // same result, skipped
+//! let ref1c = cache.get_or_cache(1, &|| compute_value(10));   // different result, also skipped
 //! assert_eq!(ref1, ref1c);
 //! # assert_eq!(ref1, &comp1);
 //! # assert_eq!(ref1b, &comp1);
@@ -38,7 +38,7 @@
 //! // Any mutable access to the cache invalidates previous references.
 //! // This allows to clear the full cache, remove or replace individual entries, ...
 //! cache.remove(&1);
-//! let ref1d = cache.get_or_cache(1, || compute_value(10));
+//! let ref1d = cache.get_or_cache(1, &|| compute_value(10));
 //! // The borrow checker now rejects the use of any previously returned references
 //! // println!("{}", ref1);  // Does NOT compile after the call to remove
 //!
@@ -156,7 +156,7 @@ impl<K: Hash + Eq + Copy, V: Sized + Clone> CachingMap<K, V> {
     /// Note that if a cached value exists, the closure is ignored.
     /// Calling this with different closures or closures that do not always return the same value
     /// can give unexpected results.
-    pub fn get_or_cache(&self, key: K, f: fn() -> V) -> &V {
+    pub fn get_or_cache(&self, key: K, f: &dyn Fn() -> V) -> &V {
         match self.get(&key) {
             Some(value) => value,
             None => {
@@ -174,7 +174,7 @@ impl<K: Hash + Eq + Copy, V: Sized + Clone> CachingMap<K, V> {
     /// the closure is a [Cow] object, which can be either owned or borrowed.
     /// Borrowed values are returned without updating the cache.
     /// Owned values are cached before returning an internal reference.
-    pub fn get_or_cache_cow<'a>(&'a self, key: K, f: fn() -> Cow<'a, V>) -> &'a V {
+    pub fn get_or_cache_cow<'a>(&'a self, key: K, f: &dyn Fn() -> Cow<'a, V>) -> &'a V {
         match self.get(&key) {
             Some(value) => value,
             None => match f() {
