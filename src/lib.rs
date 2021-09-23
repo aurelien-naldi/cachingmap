@@ -5,87 +5,90 @@
 //! Safety is maintained by refusing to replace existing entries: all previously returned references remain valid
 //! as long as only immutable methods are used.
 //!
-//! # Using closure for lazy evaluation
+//! > ⚠️ This map is **NOT thread safe**, beware that the use of unsafe may fool the borrow checker (not tested).
+//!
+//! # Get from cache or compute only if needed
+//!
+//! The most convenient use of the caching map is to request a cached value with a closure to compute it if needed.
+//! The closure will be called only if the key is missing from the cache. Note that only the first call will execute
+//! the closure, all following calls will use the cache, even if the closure is different or not predictable.
+//! See [CachingMap] doc for other uses.
 //!
 //! ```
 //! use cachingmap::CachingMap;
 //!
 //! // Suppose that we have an expensive function returning predictable results
-//! fn compute_value(seed: usize) -> String {
-//!     format!("Computed for seed {}", seed)
-//! }
-//! // We store some sample output, to test the behaviour of the cache afterwards
-//! let (comp1, comp2, comp10) = (compute_value(1), compute_value(2), compute_value(10));
+//! fn compute_value(seed: usize) -> String // content skipped
+//! # {   format!("Computed for seed {}", seed) }
+//! # let (comp1, comp2, comp10) = (compute_value(1), compute_value(2), compute_value(10));
 //!
-//!
-//! // Create a cache and use closures to lazily compute and cache missing values
+//! // Create a cache and use closures to compute and cache the result
 //! let mut cache = CachingMap::new();
-//! let v1 = cache.get_or_cache(1, || compute_value(1));
-//! let v2 = cache.get_or_cache(2, || compute_value(2));
-//! assert_eq!(v1, &comp1);
-//! assert_eq!(v2, &comp2);
+//! let ref1 = cache.get_or_cache(1, || compute_value(1));
 //!
-//! // If we call it again on the same key, the closure is not executed and the existing key not replaced
-//! let v1b = cache.get_or_cache(1, || compute_value(10));
-//! assert_eq!(v1, &comp1);
-//! assert_ne!(v1, &comp10);
+//! // If we call it on an existing key, the closure is **not** executed
+//! // and we obtain a reference to the previously cached object
+//! let ref1b = cache.get_or_cache(1, || compute_value(1));    // same result, skipped
+//! let ref1c = cache.get_or_cache(1, || compute_value(10));   // different result, also skipped
+//! assert_eq!(ref1, ref1c);
+//! # assert_eq!(ref1, &comp1);
+//! # assert_eq!(ref1b, &comp1);
+//! # assert_ne!(ref1b, &comp10);
 //!
-//! // Mutable access to the cache invalidates previous references
-//! // This enables to clear the full cache, remove or replace individual entries
+//! // Any mutable access to the cache invalidates previous references.
+//! // This allows to clear the full cache, remove or replace individual entries, ...
 //! cache.remove(&1);
-//! let rv1 = cache.get_or_cache(1, || compute_value(10));
-//! assert_ne!(rv1, &comp1);
-//! assert_eq!(rv1, &comp10);
-//!
+//! let ref1d = cache.get_or_cache(1, || compute_value(10));
 //! // The borrow checker now rejects the use of any previously returned references
-//! // assert_eq!(v1, comp1);  // Does NOT compile
+//! // println!("{}", ref1);  // Does NOT compile after the call to remove
+//!
+//! # assert_ne!(ref1d, &comp1);
+//! # assert_eq!(ref1d, &comp10);
 //! ```
-//!
-//! # Only cache result which need it
-//!
-//! If some keys are associated to values stored elsewhere while other require to create new objects, you can use the
-//! [CachingMap::get_or_cache_cow] method with a closure returning a [Cow] object to cache only the result which need it.
-//!
-//! # Explicit caching
-//!
-//! The [CachingMap::get_or_cache] method is built on the [CachingMap::cache] method to try to add owned object to the inner map.
-//!
-//! ```
-//! use cachingmap::CachingMap;
-//!
-//! // Create a new cache, it returns None for any key
-//! let mut cache = CachingMap::<usize, String>::new();
-//! assert!(cache.get(&3).is_none());
-//!
-//! // Manually add a value to the cache and check that we retrieve it
-//! let sample1 = "something";
-//! let sample2 = "something else";
-//! let (c1,b) = cache.cache(1, sample1.into());
-//! assert!(b);
-//! assert_eq!(c1, sample1);
-//!
-//! // Remember that caching another values for the same key does not change it
-//! let (c1,b) = cache.cache(1, sample2.into());
-//! assert!(!b);
-//! assert_eq!(c1, sample1);
-//! ```
-//!
-//! # Lack of thread safety
-//!
-//! The Caching Map is NOT thread safe: thread could share immutable pointers and try to add the same entry.
-//! In this case, one thread could return a reference just before the entry is overwritten by the other thread.
 use std::borrow::Cow;
 use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
 
-/// A HashMap accepting immutable insertion of new entries
+/// A HashMap accepting immutable insertion of new entries.
 ///
 /// The internal [HashMap] is available through [Deref] and [DerefMut].
-/// New entries can be added using the [Self::cache] method.
+/// New entries can be added on immutable map using the [Self::cache] method.
+/// See the [crate doc](crate) for a simple example.
+///
+/// # Finer control of the cache
+///
+/// If some results can be obtained efficiently and without new allocation, we may want to avoid wasting memory by caching them.
+/// The [CachingMap::get_or_cache_cow] method takes a closure returning a [Cow] object, it will only cache the Owned results.
+///
+/// The high level [CachingMap::get_or_cache] and [CachingMap::get_or_cache_cow] methods are both built on the [CachingMap::cache] method
+/// to add owned objects to the cache explicitly.
+///
+/// ```
+/// use cachingmap::CachingMap;
+///
+/// // Create a new cache, it returns None for any key
+/// let mut cache = CachingMap::new();
+/// # assert!(cache.get(&3).is_none());
+///
+/// // Manually add a value to the cache
+/// let (ref1,b) = cache.cache(1, String::from("something"));
+/// assert!(b);                  // b is true as the value has been added to the cache
+/// assert_eq!(ref1, "something"); // ref1 is a reference to the cached String
+///
+/// // Remember that caching another values for the same key does not change it
+/// let (ref2,b) = cache.cache(1, String::from("something else"));
+/// assert!(!b);                 // b is false as the cache already had this key
+/// assert_eq!(ref2, "something"); // ref2 is a reference to the original String
+/// ```
 ///
 /// Note that as this structure is meant for caching, cloning a CachingMap is equivalent to creating a new one: the content is not copied.
+///
+/// # Thread safety
+///
+/// The Caching Map is **NOT** thread safe: threads could share immutable pointers and try to add the same entry.
+/// In this case, one thread could return a reference just before the entry is overwritten by the other thread.
 #[derive(Debug)]
 pub struct CachingMap<K, V> {
     cache: UnsafeCell<HashMap<K, V>>,
