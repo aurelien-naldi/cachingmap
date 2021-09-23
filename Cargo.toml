@@ -1,0 +1,10 @@
+[package]
+name        = "cachingmap"
+version     = "0.1.0"
+edition     = "2018"
+authors     = ["Aurelien Naldi <aurelien.naldi@gmail.com>"]
+description = "A caching Hashmap accepting new entries through interior-mutability"
+license     = "LGPL-3.0-or-later"
+
+[dependencies]
+
