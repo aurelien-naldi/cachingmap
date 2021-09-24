@@ -1,6 +1,6 @@
 [package]
 name        = "cachingmap"
-version     = "0.2.0"
+version     = "0.2.1"
 edition     = "2018"
 authors     = ["Aurelien Naldi <aurelien.naldi@gmail.com>"]
 repository  = "https://github.com/aurelien-naldi/cachingmap"

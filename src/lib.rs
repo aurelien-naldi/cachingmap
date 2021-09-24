@@ -93,7 +93,7 @@ use std::ops::{Deref, DerefMut};
 /// In this case, one thread could return a reference just before the entry is overwritten by the other thread.
 #[derive(Debug)]
 pub struct CachingMap<K, V> {
-    cache: UnsafeCell<HashMap<K, V>>,
+    cache: UnsafeCell<HashMap<K, Box<V>>>,
 }
 
 /// A reference provided by the cache
@@ -147,7 +147,7 @@ impl<K, V> Default for CachingMap<K, V> {
 }
 
 impl<K, V> Deref for CachingMap<K, V> {
-    type Target = HashMap<K, V>;
+    type Target = HashMap<K, Box<V>>;
 
     fn deref(&self) -> &Self::Target {
         let ptr = self.cache.get();
@@ -180,7 +180,7 @@ impl<K: Hash + Eq + Copy, V: Sized + Clone> CachingMap<K, V> {
             None => unsafe {
                 // Adding a new entry to the map is safe: old references remain valid
                 let map = self.cache.get().as_mut().unwrap();
-                map.insert(key, value);
+                map.insert(key, Box::from(value));
                 CachedValue::New(&map[&key])
             },
         }
@@ -223,28 +223,19 @@ impl<K: Hash + Eq + Copy, V: Sized + Clone> CachingMap<K, V> {
 #[cfg(test)]
 mod test {
     use crate::CachingMap;
-    use std::thread;
-    use std::time::Duration;
 
     #[test]
-    fn test_threads() {
+    fn test_stability() {
         let cache = CachingMap::new();
-        cache.cache(3, 25);
-        thread::spawn(|| {
-            for i in 1..10 {
-                println!("hi number {} from the spawned thread!", i);
-                thread::sleep(Duration::from_millis(1));
-            }
-        });
-
-        for i in 1..5 {
+        let key = 12523;
+        let first = cache.cache(key, 25);
+        for i in 1..10000 {
             cache.cache(i, 5 * i + 8);
-            thread::sleep(Duration::from_millis(1));
-            println!(
-                "hi number {} from the main thread with value {:?}!",
-                i,
-                cache.cache(i, 0)
-            );
         }
+        let after = cache.cache(key, 1);
+
+        assert!(first.is_new());
+        assert!(after.is_old());
+        assert!(std::ptr::eq(*first, *after));
     }
 }
