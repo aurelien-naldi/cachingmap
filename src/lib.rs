@@ -5,7 +5,7 @@
 //! Safety is maintained by refusing to replace existing entries: all previously returned references remain valid
 //! as long as only immutable methods are used.
 //!
-//! > ⚠️ This map is **NOT thread safe**, beware that the use of unsafe may fool the borrow checker (not tested).
+//! > ⚠️ [CachingMap] is **NOT thread safe** and should be rejected by the compiler.
 //!
 //! # Get from cache or compute only if needed
 //!
@@ -18,32 +18,34 @@
 //! use cachingmap::CachingMap;
 //!
 //! // Suppose that we have an expensive function returning predictable results
-//! fn compute_value(seed: usize) -> String // content skipped
-//! # {   format!("Computed for seed {}", seed) }
-//! # let (comp1, comp2, comp10) = (compute_value(1), compute_value(2), compute_value(10));
+//! fn compute_value(seed: &usize) -> String // content skipped
+//! # {   format!("Computed for seed {}", *seed) }
+//! # let (comp1, comp2, comp10) = (compute_value(&1), compute_value(&2), compute_value(&10));
 //!
 //! // Create a cache and use closures to compute and cache the result
 //! let mut cache = CachingMap::new();
-//! let ref1 = cache.get_or_cache(1, &|| compute_value(1));
+//! let ref1 = cache.cached(1, &|v| compute_value(v));
 //!
-//! // If we call it on an existing key, the closure is **not** executed
+//! // If we call it on an existing key, the closure is NOT executed
 //! // and we obtain a reference to the previously cached object
-//! let ref1b = cache.get_or_cache(1, &|| compute_value(1));    // same result, skipped
-//! let ref1c = cache.get_or_cache(1, &|| compute_value(10));   // different result, also skipped
-//! assert_eq!(ref1, ref1c);
-//! # assert_eq!(ref1, &comp1);
-//! # assert_eq!(ref1b, &comp1);
-//! # assert_ne!(ref1b, &comp10);
+//! let ref1b = cache.cached(1, &|v| compute_value(v));    // same result, skipped
+//! let ref1c = cache.cached(1, &|v| compute_value(&10));   // different result, also skipped
+//!
+//! // Only the first inserted a value in the cache. All references borrow the same data
+//! assert!(ref1.is_new() && ref1b.is_old() && ref1c.is_old());
+//! assert!(std::ptr::eq(*ref1, *ref1c));
+//! # assert_eq!(*ref1, &comp1);
+//! # assert_eq!(*ref1b, &comp1);
+//! # assert_ne!(*ref1b, &comp10);
 //!
 //! // Any mutable access to the cache invalidates previous references.
 //! // This allows to clear the full cache, remove or replace individual entries, ...
 //! cache.remove(&1);
-//! let ref1d = cache.get_or_cache(1, &|| compute_value(10));
-//! // The borrow checker now rejects the use of any previously returned references
-//! // println!("{}", ref1);  // Does NOT compile after the call to remove
+//! let ref1d = cache.cached(1, &|v| compute_value(&10));
 //!
-//! # assert_ne!(ref1d, &comp1);
-//! # assert_eq!(ref1d, &comp10);
+//! // The borrow checker now rejects the use of any previously returned references
+//! // ref1.is_new();  // Does NOT compile after the call to remove
+//! # assert_eq!(*ref1d, &comp10);
 //! ```
 use std::borrow::Cow;
 use std::cell::UnsafeCell;
@@ -60,27 +62,27 @@ use std::ops::{Deref, DerefMut};
 /// # Finer control of the cache
 ///
 /// If some results can be obtained efficiently and without new allocation, we may want to avoid wasting memory by caching them.
-/// The [CachingMap::get_or_cache_cow] method takes a closure returning a [Cow] object, it will only cache the Owned results.
+/// The [CachingMap::cached_cow] method takes a closure returning a [Cow] object, it will only cache the Owned results.
 ///
-/// The high level [CachingMap::get_or_cache] and [CachingMap::get_or_cache_cow] methods are both built on the [CachingMap::cache] method
+/// The high level [CachingMap::cached] and [CachingMap::cached_cow] methods are both built on the [CachingMap::cache] method
 /// to add owned objects to the cache explicitly.
 ///
 /// ```
-/// use cachingmap::CachingMap;
+/// use cachingmap::{CachingMap, CachedValue};
 ///
 /// // Create a new cache, it returns None for any key
 /// let mut cache = CachingMap::new();
 /// # assert!(cache.get(&3).is_none());
 ///
 /// // Manually add a value to the cache
-/// let (ref1,b) = cache.cache(1, String::from("something"));
-/// assert!(b);                  // b is true as the value has been added to the cache
-/// assert_eq!(ref1, "something"); // ref1 is a reference to the cached String
+/// let ref1 = cache.cache(1, String::from("something"));
+/// assert!(ref1.is_new());
+/// assert_eq!(*ref1, "something"); // ref1 is a new reference to the cached String
 ///
 /// // Remember that caching another values for the same key does not change it
-/// let (ref2,b) = cache.cache(1, String::from("something else"));
-/// assert!(!b);                 // b is false as the cache already had this key
-/// assert_eq!(ref2, "something"); // ref2 is a reference to the original String
+/// let ref2 = cache.cache(1, String::from("something else"));
+/// assert!(ref2.is_old());
+/// assert_eq!(*ref2, "something"); // ref2 is a reference to the original String
 /// ```
 ///
 /// Note that as this structure is meant for caching, cloning a CachingMap is equivalent to creating a new one: the content is not copied.
@@ -92,6 +94,44 @@ use std::ops::{Deref, DerefMut};
 #[derive(Debug)]
 pub struct CachingMap<K, V> {
     cache: UnsafeCell<HashMap<K, V>>,
+}
+
+/// A reference provided by the cache
+///
+/// The variants are used to reflect the state of the cache when it has been obtained.
+/// All variants carry a reference to the same type of object, available through [Deref].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum CachedValue<'a, T> {
+    /// The reference has been forwarded from another owner
+    Ext(&'a T),
+    /// The reference has just been added to the cache
+    New(&'a T),
+    /// The reference was already in the cache
+    Old(&'a T),
+}
+
+impl<T> CachedValue<'_, T> {
+    pub const fn is_ext(&self) -> bool {
+        matches!(*self, Self::Ext(_))
+    }
+    pub const fn is_new(&self) -> bool {
+        matches!(*self, Self::New(_))
+    }
+    pub const fn is_old(&self) -> bool {
+        matches!(*self, Self::Old(_))
+    }
+}
+
+impl<'a, T> Deref for CachedValue<'a, T> {
+    type Target = &'a T;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Ext(v) => v,
+            Self::New(v) => v,
+            Self::Old(v) => v,
+        }
+    }
 }
 
 impl<K, V> Clone for CachingMap<K, V> {
@@ -134,17 +174,15 @@ impl<K, V> CachingMap<K, V> {
 
 impl<K: Hash + Eq + Copy, V: Sized + Clone> CachingMap<K, V> {
     /// Insert an entry in the cache if it was not already there
-    pub fn cache(&self, key: K, value: V) -> (&V, bool) {
+    pub fn cache(&self, key: K, value: V) -> CachedValue<V> {
         match self.get(&key) {
-            None => {
-                unsafe {
-                    // Adding a new entry to the map is safe: old references remain valid
-                    let map = self.cache.get().as_mut().unwrap();
-                    map.insert(key, value);
-                    (map.get(&key).unwrap(), true)
-                }
-            }
-            Some(v) => (v, false),
+            Some(v) => CachedValue::Old(v),
+            None => unsafe {
+                // Adding a new entry to the map is safe: old references remain valid
+                let map = self.cache.get().as_mut().unwrap();
+                map.insert(key, value);
+                CachedValue::New(&map[&key])
+            },
         }
     }
 
@@ -156,34 +194,57 @@ impl<K: Hash + Eq + Copy, V: Sized + Clone> CachingMap<K, V> {
     /// Note that if a cached value exists, the closure is ignored.
     /// Calling this with different closures or closures that do not always return the same value
     /// can give unexpected results.
-    pub fn get_or_cache(&self, key: K, f: &dyn Fn() -> V) -> &V {
+    pub fn cached(&self, key: K, f: &dyn Fn(&K) -> V) -> CachedValue<V> {
         match self.get(&key) {
-            Some(value) => value,
-            None => {
-                self.cache(key, f());
-                self.get(&key).unwrap()
-            }
+            Some(value) => CachedValue::Old(value),
+            None => self.cache(key, f(&key)),
         }
     }
 
     /// Retrieve an entry from the cache and use a closure to compute and add it if missing
     ///
-    /// This is a variant of [Self::get_or_cache] with similar properties:
+    /// This is a variant of [Self::cached] with similar properties:
     /// if the key is in the cache,the value in cache will be returned immediately,
     /// otherwise, the closure is used to get a value. In this variant, the value obtained with
     /// the closure is a [Cow] object, which can be either owned or borrowed.
     /// Borrowed values are returned without updating the cache.
     /// Owned values are cached before returning an internal reference.
-    pub fn get_or_cache_cow<'a>(&'a self, key: K, f: &dyn Fn() -> Cow<'a, V>) -> &'a V {
+    pub fn cached_cow<'a>(&'a self, key: K, f: &dyn Fn(&K) -> Cow<'a, V>) -> CachedValue<'a, V> {
         match self.get(&key) {
-            Some(value) => value,
-            None => match f() {
-                Cow::Borrowed(value) => value,
-                Cow::Owned(value) => {
-                    self.cache(key, value);
-                    self.get(&key).unwrap()
-                }
+            Some(value) => CachedValue::Old(value),
+            None => match f(&key) {
+                Cow::Borrowed(value) => CachedValue::Ext(value),
+                Cow::Owned(value) => self.cache(key, value),
             },
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::CachingMap;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn test_threads() {
+        let cache = CachingMap::new();
+        cache.cache(3, 25);
+        thread::spawn(|| {
+            for i in 1..10 {
+                println!("hi number {} from the spawned thread!", i);
+                thread::sleep(Duration::from_millis(1));
+            }
+        });
+
+        for i in 1..5 {
+            cache.cache(i, 5 * i + 8);
+            thread::sleep(Duration::from_millis(1));
+            println!(
+                "hi number {} from the main thread with value {:?}!",
+                i,
+                cache.cache(i, 0)
+            );
         }
     }
 }
