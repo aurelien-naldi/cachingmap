@@ -24,12 +24,12 @@
 //!
 //! // Create a cache and use closures to compute and cache the result
 //! let mut cache = CachingMap::new();
-//! let ref1 = cache.cached(1, &|v| compute_value(v));
+//! let ref1 = cache.cached(1, |v| compute_value(v));
 //!
 //! // If we call it on an existing key, the closure is NOT executed
 //! // and we obtain a reference to the previously cached object
-//! let ref1b = cache.cached(1, &|v| compute_value(v));    // same result, skipped
-//! let ref1c = cache.cached(1, &|v| compute_value(&10));   // different result, also skipped
+//! let ref1b = cache.cached(1, |v| compute_value(v));    // same result, skipped
+//! let ref1c = cache.cached(1, |v| compute_value(&10));   // different result, also skipped
 //!
 //! // Only the first inserted a value in the cache. All references borrow the same data
 //! assert!(ref1.is_new() && ref1b.is_old() && ref1c.is_old());
@@ -41,7 +41,7 @@
 //! // Any mutable access to the cache invalidates previous references.
 //! // This allows to clear the full cache, remove or replace individual entries, ...
 //! cache.remove(&1);
-//! let ref1d = cache.cached(1, &|v| compute_value(&10));
+//! let ref1d = cache.cached(1, |v| compute_value(&10));
 //!
 //! // The borrow checker now rejects the use of any previously returned references
 //! // ref1.is_new();  // Does NOT compile after the call to remove
@@ -194,7 +194,7 @@ impl<K: Hash + Eq + Copy, V: Sized + Clone> CachingMap<K, V> {
     /// Note that if a cached value exists, the closure is ignored.
     /// Calling this with different closures or closures that do not always return the same value
     /// can give unexpected results.
-    pub fn cached(&self, key: K, f: &dyn Fn(&K) -> V) -> CachedValue<V> {
+    pub fn cached<F: Fn(&K) -> V>(&self, key: K, f: F) -> CachedValue<V> {
         match self.get(&key) {
             Some(value) => CachedValue::Old(value),
             None => self.cache(key, f(&key)),
@@ -209,7 +209,7 @@ impl<K: Hash + Eq + Copy, V: Sized + Clone> CachingMap<K, V> {
     /// the closure is a [Cow] object, which can be either owned or borrowed.
     /// Borrowed values are returned without updating the cache.
     /// Owned values are cached before returning an internal reference.
-    pub fn cached_cow<'a>(&'a self, key: K, f: &dyn Fn(&K) -> Cow<'a, V>) -> CachedValue<'a, V> {
+    pub fn cached_cow<'a, F: Fn(&K) -> Cow<'a, V>>(&'a self, key: K, f: F) -> CachedValue<'a, V> {
         match self.get(&key) {
             Some(value) => CachedValue::Old(value),
             None => match f(&key) {
