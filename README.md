@@ -2,23 +2,20 @@
 
 This crate provides a map designed for caching intermediate results by accepting new entries while immutable.
 It provides simple immutable references to the cached values which remain valid while new entries are added.
+
 To return lightweight references without a guard or any encapsulation, it uses an UnsafeCell and short pieces
 of unsafe code. The returned references are guaranted to remain safe as existing entries can **NOT** be removed
 without proper mutable access. Values are boxed to ensure that pointers remain stable when the HashMap is extended.
 
-> ⚠️  Earlier versions did not use boxed values, old returned references could become invalid.
+The main use case is as part of a larger data structure where it can store structs computed from on other fields.
+Individual entries may then need to be cleared when some fields are modified to ensure consistency.
 
-> ⚠️  This map is **NOT thread-safe**, but may be accepted in multi-threaded code (untested).
-
-The main objective is to include this map in a larger data structure and to use it to store the result of some
-computations based on other fields. Individual entries may then need to be cleared when some fields are modified
-to ensure that the next returned result remain valid.
+The use of a cache allows to avoid repeating computations and leaking some implementation details (returning
+owned objects or Rc can be a side effect of some internal design choices).
 
 
-The current version is a proof of concept, with some potential room for improvement.
-* The code is short and seems valid in single-threaded context, but uses unsafe code
-* It is probably not thread safe. If it compiles in multi-threaded context, it should be blocked.
-  A thread-safe extension could be useful.
+The current version is a proof of concept, with some potential room for improvement:
+* The code is short and seems valid in single-threaded context, but uses unsafe code.
+* It is not thread safe. A thread-safe implmentation of the same trait (using a Mutex) is possible.
 * It uses an internal HashMap, but could be extended to other Indexable backend.
-
 
